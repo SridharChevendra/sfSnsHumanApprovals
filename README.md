@@ -86,6 +86,3 @@ Until a human provides approves/declines, Stepfunctions workflow is paused.
 
 #### 5. Cleanup
 Go to AWS console Cloudformation, delete the stack "sfSnsApproval" to cleanup resources.
-
-
-
