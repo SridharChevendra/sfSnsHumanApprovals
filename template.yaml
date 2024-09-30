@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: CloudFormation template for Step Functions state machine with API Gateway and Lambda
+
+Resources:
+  MyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineType: STANDARD
+      DefinitionString: !Sub
+        - |
+          {
+            "Comment": "A description of my state machine",
+            "StartAt": "Total Expenses >= $500",
+            "States": {
+              "Total Expenses >= $500": {
+                "Type": "Choice",
+                "Choices": [
+                  {
+                    "Variable": "$.totalExpense",
+                    "NumericLessThan": 500,
+                    "Next": "Auto-Approved"
+                  }
+                ],
+                "Default": "Publish Message And Wait For Callback"
+              },
+              "Auto-Approved": {
+                "Type": "Succeed"
+              },
+              "Publish Message And Wait For Callback": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
+                "Parameters": {
+                  "Subject": "Expense Approval Request",
+                  "Message.$": "States.Format('Please approve the expense claim for {}\n Approve: {}?status=approve&taskToken={}\n Decline: {}?status=decline&taskToken={}\n', $.expenseReportId, '${ApiUrl}', States.Base64Encode($$.Task.Token), '${ApiUrl}', States.Base64Encode($$.Task.Token))",
+                  "TopicArn": "${SNSTopicArn}"
+                },
+                "Next": "Approval/Decline"
+              },
+              "Approval/Decline": {
+                "Type": "Choice",
+                "Choices": [
+                  {
+                    "Variable": "$.Status",
+                    "StringMatches": "Approved",
+                    "Next": "Approved"
+                  },
+                  {
+                    "Variable": "$.Status",
+                    "StringMatches": "Declined",
+                    "Next": "Decline"
+                  }
+                ]
+              },
+              "Approved": {
+                "Type": "Succeed"
+              },
+              "Decline": {
+                "Type": "Fail"
+              }
+            }
+          }
+        - 
+          SNSTopicArn: !Ref SNSTopic
+          ApiUrl: !Sub "https://${ApprovalApi}.execute-api.${AWS::Region}.amazonaws.com/prod/approval"
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: expense-approval-topic
+
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StepFunctionsExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref SNSTopic
+
+  ApprovalLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt ApprovalLambdaFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import base64
+
+          def lambda_handler(event, context):
+              stepfunctions = boto3.client('stepfunctions')
+              
+              # Extract the query string parameters
+              query_params = event.get('queryStringParameters', {})
+              status = query_params.get('status', '').lower()
+              encoded_task_token = query_params.get('taskToken')
+              decoded_bytes = base64.b64decode(encoded_task_token)
+              task_token = decoded_bytes.decode("utf-8")
+              # task_token = query_params.get('taskToken')
+              
+              if status == 'approve':
+                  output = json.dumps({"Status": "Approved"})
+                  try:
+                      stepfunctions.send_task_success(
+                          taskToken=task_token,
+                          output=output
+                      )
+                      return {
+                          'statusCode': 200,
+                          'body': json.dumps('Task approved')                          
+                      }
+                  except Exception as e:
+                      print(e)
+                      return {
+                          'statusCode': 500,
+                          'body': json.dumps('Error processing request')
+                      }
+              elif status == 'decline':
+                  output = json.dumps({"Status": "Declined"})
+                  try:
+                      stepfunctions.send_task_success(
+                          taskToken=task_token,
+                          output=output                          
+                      )
+                      return {
+                          'statusCode': 200,
+                          'body': json.dumps('Task declined')                          
+                      }
+                  except Exception as e:
+                      print(e)
+                      return {
+                          'statusCode': 500,
+                          'body': json.dumps('Error processing request')
+                      }
+              else:
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps('Invalid status parameter')
+                  }
+
+  ApprovalLambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StepFunctionsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                Resource: !Ref MyStateMachine
+
+  ApprovalApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ApprovalAPI
+
+  ApprovalResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApprovalApi.RootResourceId
+      PathPart: approval
+      RestApiId: !Ref ApprovalApi
+
+  ApprovalMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      ResourceId: !Ref ApprovalResource
+      RestApiId: !Ref ApprovalApi
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt ApprovalLambdaFunction.Arn
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApprovalMethod
+    Properties:
+      RestApiId: !Ref ApprovalApi
+      StageName: prod
+
+  LambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt ApprovalLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApprovalApi}/*/GET/approval
+
+Outputs:
+  StateMachineArn:
+    Description: ARN of the created Step Functions state machine
+    Value: !Ref MyStateMachine
+  SNSTopicArn:
+    Description: ARN of the created SNS Topic
+    Value: !Ref SNSTopic
+  ApiGatewayUrl:
+    Description: URL of the API Gateway
+    Value: !Sub https://${ApprovalApi}.execute-api.${AWS::Region}.amazonaws.com/prod/approval
