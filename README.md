@@ -32,7 +32,7 @@ cd sfSnsHumanApprovals
 #### 2. AWS stack deployment
 ##### CFN Deployment
 With in your AWS console,
-1. Go to Cloudformation
+1. Go to Cloudformation, use the "template.yaml" on the root of the repo to create stack.
 2. Create stack(provide a stack name. For example: "sfSnsApproval")
 3. Accept the default parameters and deploy stack
 
@@ -47,7 +47,7 @@ Confirm subscription
 Please do not reply directly to this email. If you wish to remove yourself from receiving all future SNS subscription confirmation requests please send an email to sns-opt-out
 ```
 
-#### 3. Test
+#### 3. Test Workflow
 1. In the cloudformation outputs, identify the step function name
 2. With in the stepfunctions service open the stepfunction that created, "Start Execution"
 3. Use the following payload in the input section.
@@ -79,6 +79,13 @@ Please do not reply directly to this email. If you wish to remove yourself from 
   "approverEmail": "manager@example.com"
 }
 ```
-4. 
+#### 4. E-mail Approval
+Check for an e-mail with the Approval/Decline. 
+
+Until a human provides approves/declines, Stepfunctions workflow is paused.
+
+#### 5. Cleanup
+Go to AWS console Cloudformation, delete the stack to cleanup resources.
+
 
 
