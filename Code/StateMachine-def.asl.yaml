@@ -1,0 +1,41 @@
+Comment: A description of my state machine
+StartAt: Total Expenses >= $500
+States:
+  Total Expenses >= $500:
+    Type: Choice
+    Choices:
+      - Variable: $.totalExpense
+        NumericLessThan: 500
+        Next: Auto-Approved
+    Default: Publish Message And Wait For Callback
+  Auto-Approved:
+    Type: Succeed
+  Publish Message And Wait For Callback:
+    Type: Task
+    Resource: arn:aws:states:::sns:publish.waitForTaskToken
+    Parameters:
+      Subject: Expense Approval Request
+      Message.$: >-
+        States.Format('Please approve the expense claim for {}
+         Approve: {}?status=approve&taskToken={}
+         Decline: {}?status=decline&taskToken={}
+        ', $.expenseReportId,
+        '<API Gateway End point url>',
+        States.Base64Encode($$.Task.Token),
+        '<API Gateway End point url>',
+        States.Base64Encode($$.Task.Token))
+      TopicArn: <SNS topic>
+    Next: Approval/Decline
+  Approval/Decline:
+    Type: Choice
+    Choices:
+      - Variable: $.Status
+        StringMatches: Approved
+        Next: Approved
+      - Variable: $.Status
+        StringMatches: Declined
+        Next: Decline
+  Approved:
+    Type: Succeed
+  Decline:
+    Type: Fail
